@@ -1,0 +1,199 @@
+/* Themed with the host's injected variables (see docs/sp-19-plugin-api.md). */
+
+.smcp-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s, 8px);
+  padding: var(--s, 8px);
+  background: var(--bg, transparent);
+  color: var(--text-color, inherit);
+  font-family: var(--font-primary-stack, sans-serif);
+  font-size: 13px;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.smcp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s, 8px);
+}
+
+.smcp-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.smcp-sub,
+.smcp-hint,
+.smcp-note {
+  margin: 0;
+  font-size: 11px;
+  opacity: 0.72;
+}
+
+.smcp-note {
+  line-height: 1.45;
+}
+
+.smcp-chip {
+  border-radius: 999px;
+  border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.4));
+  padding: 2px 10px;
+  font-size: 11px;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+.smcp-chip-on {
+  border-color: var(--c-primary, #4a90d9);
+  color: var(--c-primary, #4a90d9);
+  opacity: 1;
+}
+
+.smcp-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s, 8px);
+  background: var(--card-bg, rgba(128, 128, 128, 0.06));
+  border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.2));
+  border-radius: var(--card-border-radius, 8px);
+  padding: var(--s2, 12px);
+}
+
+.smcp-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--s, 8px);
+}
+
+.smcp-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.smcp-grid strong {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.smcp-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+.smcp-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s, 8px);
+}
+
+.smcp-row-between {
+  justify-content: space-between;
+}
+
+.smcp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.smcp-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-radius: var(--card-border-radius, 6px);
+  border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.35));
+  background: var(--bg, #fff);
+  color: var(--text-color, inherit);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.smcp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s, 8px);
+}
+
+.smcp-btn {
+  padding: 5px 10px;
+  border-radius: var(--card-border-radius, 6px);
+  border: 1px solid var(--divider-color, rgba(128, 128, 128, 0.35));
+  background: transparent;
+  color: var(--text-color, inherit);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.smcp-btn:hover {
+  border-color: var(--c-primary, #4a90d9);
+  color: var(--c-primary, #4a90d9);
+}
+
+.smcp-error {
+  margin: 0;
+  color: var(--c-warn, #c1440e);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.smcp-current {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.smcp-list,
+.smcp-log {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.smcp-list li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.smcp-done {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.smcp-log li {
+  display: flex;
+  gap: var(--s, 8px);
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.smcp-log-err {
+  color: var(--c-warn, #c1440e);
+}
+
+.smcp-log-ok {
+  color: var(--c-primary, #4a90d9);
+}
+
+.smcp-time {
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}

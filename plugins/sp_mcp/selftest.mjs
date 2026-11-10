@@ -1,0 +1,255 @@
+#!/usr/bin/env node
+/**
+ * Self-check for the sp_mcp bridge without Super Productivity.
+ *
+ * It proves the parts that can be proven off-device:
+ *   1. the host scripts run in a VM sandbox that only has `require(fs|path|os)`,
+ *      `args`, `JSON` and `console` — the surface the real VM tier gives — so a
+ *      `Buffer`/`process`/timer mistake fails here instead of on device;
+ *   2. a command file written by the agent is drained, executed against a fake
+ *      plugin API and answered with a response file plus a heartbeat;
+ *   3. the agent-side queue turns a missing plugin into a `plugin-down` error
+ *      and a silent plugin into a `timeout` error;
+ *   4. every MCP tool maps to a real plugin action.
+ *
+ *   node selftest.mjs
+ */
+import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import vm from 'node:vm';
+
+const nodeRequire = createRequire(import.meta.url);
+
+const { ACTIONS } = await import('./src/lib/actions.ts');
+const { DRAIN_SCRIPT, COMMIT_SCRIPT, STAT_SCRIPT } = await import('./src/lib/scripts.ts');
+const { TOOLS } = await import('./bridge/src/tools.ts');
+const { CommandQueue, BridgeError } = await import('./bridge/src/queue.ts');
+
+/**
+ * Mirrors the host's VM tier (`electron/plugin-node-executor.js`): the script
+ * body runs inside an IIFE so a top-level `return` is legal, and the only
+ * globals are require(fs|path|os), args, JSON and console.
+ */
+function sandbox(script, args) {
+  const context = vm.createContext({
+    require: (name) => {
+      if (!['fs', 'path', 'os'].includes(name)) throw new Error(`sandbox denied require('${name}')`);
+      return nodeRequire(name);
+    },
+    args,
+    JSON,
+    console: { log() {}, error() {}, warn() {} },
+  });
+  return vm.runInContext(`(function() {${script}\n})()`, context, { timeout: 5000 });
+}
+
+function fakeApi() {
+  const now = Date.now();
+  const tasks = [
+    {
+      id: 't1',
+      title: 'Write the plugin',
+      notes: 'docs first',
+      timeEstimate: 3_600_000,
+      timeSpent: 0,
+      isDone: false,
+      projectId: 'P1',
+      tagIds: [],
+      parentId: null,
+      created: now,
+      subTaskIds: [],
+      timeSpentOnDay: {},
+    },
+  ];
+  const projects = [
+    { id: 'P1', title: 'Inbox', theme: {}, taskIds: ['t1'], backlogTaskIds: [], noteIds: [] },
+  ];
+  const tags = [
+    { id: 'TODAY', title: 'Today', color: null, taskIds: [], created: now, theme: {}, advancedCfg: {} },
+  ];
+  const dispatched = [];
+  let seq = 0;
+
+  return {
+    state: { tasks, projects, tags, dispatched },
+    api: {
+      getTasks: async () => tasks,
+      getArchivedTasks: async () => tasks.filter((t) => t.isDone),
+      getAllProjects: async () => projects,
+      getAllTags: async () => tags,
+      addTask: async (data) => {
+        const id = `new${++seq}`;
+        tasks.push({
+          ...data,
+          id,
+          timeSpent: 0,
+          isDone: false,
+          created: Date.now(),
+          subTaskIds: [],
+          tagIds: data.tagIds ?? [],
+        });
+        return id;
+      },
+      updateTask: async (id, updates) => {
+        const task = tasks.find((t) => t.id === id);
+        if (!task) throw new Error(`no task ${id}`);
+        Object.assign(task, updates);
+      },
+      deleteTask: async (id) => {
+        const index = tasks.findIndex((t) => t.id === id);
+        if (index < 0) throw new Error(`no task ${id}`);
+        tasks.splice(index, 1);
+      },
+      addProject: async (data) => {
+        const id = `P${projects.length + 1}`;
+        projects.push({
+          id,
+          title: data.title,
+          theme: data.theme ?? {},
+          taskIds: [],
+          backlogTaskIds: [],
+          noteIds: [],
+        });
+        return id;
+      },
+      updateProject: async (id, updates) =>
+        Object.assign(
+          projects.find((p) => p.id === id) ?? {},
+          updates,
+        ),
+      addTag: async (data) => {
+        const id = `tag${tags.length}`;
+        tags.push({
+          id,
+          title: data.title,
+          color: data.color ?? null,
+          taskIds: [],
+          created: Date.now(),
+          theme: {},
+          advancedCfg: {},
+        });
+        return id;
+      },
+      updateTag: async (id, updates) =>
+        Object.assign(tags.find((t) => t.id === id) ?? {}, updates),
+      reorderTasks: async () => undefined,
+      showSnack: () => undefined,
+      dispatchAction: (action) => dispatched.push(action),
+    },
+  };
+}
+
+const passed = [];
+const check = (name) => passed.push(name);
+
+const dir = await mkdtemp(path.join(tmpdir(), 'sp-mcp-selftest-'));
+const dirs = {
+  root: dir,
+  commands: path.join(dir, 'commands'),
+  responses: path.join(dir, 'responses'),
+  state: path.join(dir, 'state'),
+};
+
+try {
+  // 1. VM-tier safety of every host script
+  sandbox(STAT_SCRIPT, [dir]);
+  sandbox(DRAIN_SCRIPT, [dir]);
+  check('host scripts run with only fs/path/os, args, JSON and console');
+
+  // 2. command -> action -> response -> heartbeat
+  const { api, state } = fakeApi();
+  const command = {
+    id: 'req-1',
+    action: 'create_task',
+    args: { title: 'from the agent', plan_today: true, due_day: '2026-11-20' },
+    issuedAt: Date.now(),
+  };
+  await mkdir(dirs.commands, { recursive: true });
+  await writeFile(path.join(dirs.commands, 'req-1.json'), JSON.stringify(command), 'utf8');
+
+  const drained = sandbox(DRAIN_SCRIPT, [dir]);
+  assert.equal(drained.commands.length, 1, 'drain returns the pending command');
+  assert.equal(drained.commands[0].cmd.action, 'create_task');
+
+  const startedAt = Date.now();
+  const result = await ACTIONS[command.action](command.args, {
+    api,
+    getCurrentTaskId: () => null,
+    log: () => undefined,
+  });
+  const finishedAt = Date.now();
+  const response = {
+    id: command.id,
+    action: command.action,
+    ok: true,
+    result,
+    startedAt,
+    finishedAt,
+    durationMs: finishedAt - startedAt,
+  };
+  const heartbeat = {
+    protocol: 1,
+    pluginVersion: '0.1.0',
+    updatedAt: Date.now(),
+    pollMs: 800,
+    enabled: true,
+    currentTaskId: null,
+    lastAction: command.action,
+    lastError: null,
+    stats: { processed: 1, errors: 0, expired: 0 },
+  };
+
+  sandbox(COMMIT_SCRIPT, [
+    dir,
+    [{ id: command.id, commandFile: drained.commands[0].file, response }],
+    heartbeat,
+  ]);
+
+  const written = JSON.parse(await readFile(path.join(dirs.responses, 'req-1.json'), 'utf8'));
+  assert.equal(written.ok, true);
+  assert.equal(state.tasks.length, 2, 'task was created');
+  assert.equal(state.tasks[1].dueDay, '2026-11-20');
+  assert.equal(state.dispatched[0].type, '[Task Shared] planTasksForToday');
+  check('command → plugin action → response → heartbeat round trip');
+
+  assert.equal(sandbox(DRAIN_SCRIPT, [dir]).commands.length, 0, 'consumed command file is gone');
+  assert.equal(sandbox(STAT_SCRIPT, [dir]).pluginState?.pluginVersion, '0.1.0');
+  check('command file removed, heartbeat readable');
+
+  // 3. agent-side failure modes
+  const queue = new CommandQueue(dirs, { timeoutMs: 400 });
+  await assert.rejects(queue.call('get_tasks', {}), (error) => {
+    assert.ok(error instanceof BridgeError);
+    assert.equal(error.code, 'timeout');
+    return true;
+  });
+  check('silent plugin → timeout error, command dropped');
+
+  const coldDir = await mkdtemp(path.join(tmpdir(), 'sp-mcp-cold-'));
+  const cold = new CommandQueue({
+    root: coldDir,
+    commands: path.join(coldDir, 'commands'),
+    responses: path.join(coldDir, 'responses'),
+    state: path.join(coldDir, 'state'),
+  });
+  await assert.rejects(cold.call('get_tasks', {}), (error) => {
+    assert.equal(error.code, 'plugin-down');
+    assert.match(error.message, /has never polled/);
+    return true;
+  });
+  await rm(coldDir, { recursive: true, force: true });
+  check('missing plugin → plugin-down with a fixable message');
+
+  // 4. tool list ↔ action table
+  const missing = TOOLS.filter((tool) => !tool.local && !ACTIONS[tool.action]).map((tool) => tool.name);
+  assert.deepEqual(missing, [], `tools without an action handler: ${missing.join(', ')}`);
+  check(`all ${TOOLS.length} MCP tools map to a plugin action`);
+
+  console.log(`[selftest] ${passed.length} checks passed (node ${process.version})`);
+  for (const line of passed) console.log(`  ✓ ${line}`);
+} finally {
+  await rm(dir, { recursive: true, force: true });
+}

@@ -1,0 +1,23 @@
+{
+  "name": "base-ai-bot",
+  "version": "1.6.1",
+  "private": true,
+  "type": "module",
+  "description": "Base AI Bot — Super Productivity AI chat plugin (SolidJS, iframe)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "solid-js": "1.9.17"
+  },
+  "devDependencies": {
+    "@sp/plugin-kit": "workspace:*",
+    "@types/node": "^24.19.2",
+    "typescript": "5.9.3",
+    "vite": "8.3.4",
+    "vite-plugin-singlefile": "2.3.4",
+    "vite-plugin-solid": "2.11.14"
+  }
+}

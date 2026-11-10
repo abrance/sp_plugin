@@ -1,0 +1,20 @@
+{
+  "name": "sp_mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Stdio MCP server that drives the sp_mcp Super Productivity plugin over a command-file queue",
+  "main": "src/main.ts",
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "5.9.3"
+  }
+}

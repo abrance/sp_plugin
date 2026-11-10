@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["vite/client", "node"],
+    "paths": {
+      "@sp/plugin-kit": ["../../packages/plugin-kit/src/index.ts"],
+      "@sp/plugin-kit/bridge-protocol": ["../../packages/plugin-kit/src/bridge-protocol.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
+}

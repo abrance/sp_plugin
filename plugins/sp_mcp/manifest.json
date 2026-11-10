@@ -1,0 +1,32 @@
+{
+  "id": "sp_mcp",
+  "name": "SP MCP Bridge",
+  "version": "0.1.0",
+  "manifestVersion": 1,
+  "minSupVersion": "19.2.0",
+  "description": "Command-file bridge that lets an external MCP/agent process read and change tasks, projects, tags and the timer through the plugin API.",
+  "icon": "icon.svg",
+  "iFrame": true,
+  "sidePanel": true,
+  "isSkipMenuEntry": true,
+  "hooks": ["currentTaskChange", "taskComplete"],
+  "permissions": [
+    "getTasks",
+    "getArchivedTasks",
+    "addTask",
+    "updateTask",
+    "deleteTask",
+    "getAllProjects",
+    "addProject",
+    "updateProject",
+    "getAllTags",
+    "addTag",
+    "updateTag",
+    "reorderTasks",
+    "dispatchAction",
+    "showSnack",
+    "notify",
+    "nodeExecution"
+  ],
+  "allowedHosts": []
+}

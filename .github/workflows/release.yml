@@ -1,0 +1,70 @@
+name: Release plugins
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'plugins/**'
+      - 'packages/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.16.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build plugin packages
+        run: node scripts/build.mjs --all
+
+      - name: Publish new versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release.mjs
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-zips
+          path: |
+            release/*.zip
+            release/packages.json
+          retention-days: 14
+
+      - name: Check for uncommitted dist changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::warning::working tree changed during build; dist/ should be gitignored"
+            git status --porcelain
+          fi

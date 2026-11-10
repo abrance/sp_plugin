@@ -1,0 +1,17 @@
+{
+  "name": "@sp/plugin-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared helpers for Super Productivity plugins in this repo (source-only, no build)",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
