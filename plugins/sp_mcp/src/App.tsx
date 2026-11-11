@@ -1,13 +1,18 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { getApi, hasApi } from '@sp/plugin-kit';
+import type { BridgePluginState } from '@sp/plugin-kit';
 import type { Task } from '@sp/plugin-kit';
 import manifest from '../manifest.json';
 import { CONFIG_DEFAULTS, POLL_MAX_MS, POLL_MIN_MS, loadConfig, normalizeConfig, saveConfig } from './lib/config';
 import type { BridgeConfig } from './lib/config';
-import { BridgeRunner } from './lib/runner';
-import type { LogEntry, RunnerStatus } from './lib/runner';
+import { ACTIONS } from './lib/actions';
+import { runNode } from './lib/host';
+import { STAT_SCRIPT } from './lib/scripts';
+import type { DirStat } from './lib/runner';
 
 const POLL_CHOICES = [400, 800, 1500, 3000];
+const PANEL_REFRESH_MS = 1500;
+const PLUGIN_STALE_MS = 10_000;
 
 function ago(ms: number | null): string {
   if (!ms) return '—';
@@ -17,10 +22,15 @@ function ago(ms: number | null): string {
   return `${Math.round(delta / 60_000)}m ago`;
 }
 
+/**
+ * Status panel only. The polling loop lives in the host `plugin.js` so it keeps
+ * running after this iframe is destroyed; this page reads the heartbeat that
+ * the host loop writes and edits the shared config.
+ */
 export default function App() {
   const [config, setConfig] = createSignal<BridgeConfig>(CONFIG_DEFAULTS);
-  const [status, setStatus] = createSignal<RunnerStatus | null>(null);
-  const [logs, setLogs] = createSignal<LogEntry[]>([]);
+  const [state, setState] = createSignal<BridgePluginState | null>(null);
+  const [statAt, setStatAt] = createSignal<number | null>(null);
   const [message, setMessage] = createSignal<string | null>(null);
   const [currentTask, setCurrentTask] = createSignal<Task | null>(null);
   const [today, setToday] = createSignal<Task[]>([]);
@@ -38,11 +48,21 @@ export default function App() {
     );
   }
 
-  const runner = new BridgeRunner(manifest.version, () => config());
+  const alive = () => {
+    const heartbeat = state();
+    if (!heartbeat || !statAt()) return false;
+    return Date.now() - heartbeat.updatedAt < PLUGIN_STALE_MS;
+  };
 
-  const refreshSnapshot = () => {
-    setStatus(runner.snapshot());
-    setLogs(runner.logs());
+  const refreshState = async () => {
+    try {
+      const stat = await runNode<DirStat>(STAT_SCRIPT, [config().bridgeDir], 4000);
+      setState(stat.pluginState ?? null);
+      setStatAt(Date.now());
+    } catch (error) {
+      setState(null);
+      setMessage(`state read failed: ${(error as Error).message}`);
+    }
   };
 
   const refreshTasks = async () => {
@@ -52,10 +72,10 @@ export default function App() {
       const ids = tags.find((t) => t.id === 'TODAY')?.taskIds ?? [];
       const byId = new Map(tasks.map((t) => [t.id, t]));
       setToday(ids.map((id) => byId.get(id)).filter((t): t is Task => !!t).slice(0, 8));
-      const currentId = status()?.currentTaskId;
+      const currentId = state()?.currentTaskId;
       setCurrentTask(currentId ? (byId.get(currentId) ?? null) : null);
     } catch {
-      /* the panel is informational; failures surface in the log */
+      /* the panel is informational; failures surface in the message line */
     }
   };
 
@@ -64,44 +84,25 @@ export default function App() {
     setConfig(normalized);
     try {
       await saveConfig(normalized);
-      setMessage('settings saved');
+      setMessage('settings saved — the host loop picks them up within 1.5 s');
     } catch (error) {
       setMessage(`settings active but not saved: ${(error as Error).message}`);
     }
-    runner.applyConfig(normalized);
+    void refreshState();
   };
 
   onMount(async () => {
     const loaded = await loadConfig();
     setConfig(loaded);
     setConfigured(true);
-    const unsubscribe = runner.subscribe(refreshSnapshot);
-    const interval = setInterval(refreshSnapshot, 1000);
-
-    try {
-      const api = getApi();
-      api.registerHook('currentTaskChange', (payload: unknown) => {
-        const change = payload as { current?: Task | null };
-        runner.setCurrentTaskId(change?.current?.id ?? null);
-        void refreshTasks();
-      });
-      api.registerHook('taskComplete', () => {
-        runner.push('info', 'task completed in the app');
-        void refreshTasks();
-      });
-    } catch (error) {
-      runner.push('err', `hook registration failed: ${(error as Error).message}`);
-    }
-
-    if (loaded.enabled) runner.start();
+    void refreshState();
     void refreshTasks();
+    const statePoll = setInterval(() => void refreshState(), PANEL_REFRESH_MS);
     const taskPoll = setInterval(() => void refreshTasks(), 5000);
 
     onCleanup(() => {
-      unsubscribe();
-      clearInterval(interval);
+      clearInterval(statePoll);
       clearInterval(taskPoll);
-      runner.stop();
     });
   });
 
@@ -120,52 +121,47 @@ export default function App() {
         <div>
           <h1 class="smcp-title">SP MCP Bridge</h1>
           <p class="smcp-sub">
-            v{manifest.version} · protocol {status()?.running ? 'v1' : 'idle'}
+            v{manifest.version} · host loop {alive() ? 'v1' : 'idle'}
           </p>
         </div>
-        <span classList={{ 'smcp-chip': true, 'smcp-chip-on': !!status()?.running }}>
-          {status()?.running ? 'polling' : 'stopped'}
+        <span classList={{ 'smcp-chip': true, 'smcp-chip-on': alive() }}>
+          {alive() ? 'polling' : 'stopped'}
         </span>
       </header>
 
       <section class="smcp-card">
         <div class="smcp-grid">
           <div>
-            <span class="smcp-label">Queue</span>
-            <strong>{status()?.queueDepth ?? 0}</strong>
-          </div>
-          <div>
             <span class="smcp-label">Processed</span>
-            <strong>{status()?.processed ?? 0}</strong>
+            <strong>{state()?.stats.processed ?? 0}</strong>
           </div>
           <div>
             <span class="smcp-label">Errors</span>
-            <strong>{status()?.errors ?? 0}</strong>
+            <strong>{state()?.stats.errors ?? 0}</strong>
           </div>
           <div>
             <span class="smcp-label">Expired</span>
-            <strong>{status()?.expired ?? 0}</strong>
+            <strong>{state()?.stats.expired ?? 0}</strong>
           </div>
           <div>
             <span class="smcp-label">Last action</span>
-            <strong>{status()?.lastAction ?? '—'}</strong>
+            <strong>{state()?.lastAction ?? '—'}</strong>
           </div>
           <div>
-            <span class="smcp-label">Duration</span>
-            <strong>{status()?.lastDurationMs != null ? `${status()!.lastDurationMs} ms` : '—'}</strong>
-          </div>
-          <div>
-            <span class="smcp-label">Last poll</span>
-            <strong>{ago(status()?.lastPollAt ?? null)}</strong>
+            <span class="smcp-label">Heartbeat</span>
+            <strong>{ago(state()?.updatedAt ?? null)}</strong>
           </div>
           <div>
             <span class="smcp-label">Interval</span>
-            <strong>{config().pollMs} ms</strong>
+            <strong>{state()?.pollMs ?? config().pollMs} ms</strong>
           </div>
         </div>
-        <Show when={status()?.lastError}>
+        <Show when={state()?.lastError}>
           {(error) => <p class="smcp-error">{error()}</p>}
         </Show>
+        <p class="smcp-hint">
+          Written by the host plugin, not this panel — closing the panel does not stop polling.
+        </p>
       </section>
 
       <section class="smcp-card">
@@ -213,9 +209,9 @@ export default function App() {
             class="smcp-btn"
             onClick={async () => {
               try {
-                const stat = await runner.statDir();
+                const stat = await runNode<DirStat>(STAT_SCRIPT, [config().bridgeDir], 4000);
                 setMessage(
-                  `dir ${stat.exists ? 'exists' : 'missing'} · ${stat.commands} queued · ${stat.responses} unanswered · plugin state ${stat.pluginState ? 'present' : 'absent'}`,
+                  `dir ${stat.exists ? 'exists' : 'missing'} · ${stat.commands} queued · ${stat.responses} unanswered · host state ${stat.pluginState ? 'present' : 'absent'}`,
                 );
               } catch (error) {
                 setMessage(`check failed: ${(error as Error).message}`);
@@ -224,18 +220,22 @@ export default function App() {
           >
             Check folder
           </button>
-          <button class="smcp-btn" onClick={() => void runner.selfTest().then(setMessage)}>
-            Test plugin API
-          </button>
           <button
             class="smcp-btn"
-            onClick={() => {
-              if (status()?.running) runner.stop();
-              else runner.start();
-              refreshSnapshot();
+            onClick={async () => {
+              try {
+                const result = await ACTIONS['ping']!({}, {
+                  api: getApi(),
+                  getCurrentTaskId: () => state()?.currentTaskId ?? null,
+                  log: () => undefined,
+                });
+                setMessage(`self-test ok: ${(result as { openTasks?: number }).openTasks ?? 0} open tasks`);
+              } catch (error) {
+                setMessage(`self-test failed: ${(error as Error).message}`);
+              }
             }}
           >
-            {status()?.running ? 'Stop' : 'Start'}
+            Test plugin API
           </button>
         </div>
 
@@ -249,7 +249,7 @@ export default function App() {
         <div class="smcp-row smcp-row-between">
           <span class="smcp-label">Current task</span>
           <span class="smcp-hint">
-            {status()?.currentTaskId ? status()!.currentTaskId!.slice(0, 8) : 'nothing tracked'}
+            {state()?.currentTaskId ? state()!.currentTaskId!.slice(0, 8) : 'nothing tracked'}
           </span>
         </div>
         <p class="smcp-current">
@@ -261,22 +261,6 @@ export default function App() {
             {(task) => (
               <li>
                 <span classList={{ 'smcp-done': task.isDone }}>{task.title}</span>
-              </li>
-            )}
-          </For>
-        </ul>
-      </section>
-
-      <section class="smcp-card">
-        <span class="smcp-label">Recent activity</span>
-        <ul class="smcp-log">
-          <For each={logs()} fallback={<li class="smcp-hint">no activity yet</li>}>
-            {(entry) => (
-              <li classList={{ 'smcp-log-err': entry.kind === 'err', 'smcp-log-ok': entry.kind === 'ok' }}>
-                <span class="smcp-time">
-                  {new Date(entry.at).toLocaleTimeString(undefined, { hour12: false })}
-                </span>
-                {entry.text}
               </li>
             )}
           </For>

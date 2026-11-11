@@ -1,15 +1,18 @@
-import { getApi } from '@sp/plugin-kit';
+// Relative paths (not the `@sp/plugin-kit` alias) so the Node self-test can
+// import this module directly without a bundler.
+import { getApi } from '../../../../packages/plugin-kit/src/api.ts';
+import type { PluginApi } from '../../../../packages/plugin-kit/src/api.ts';
 import {
   BRIDGE_PROTOCOL_VERSION,
   COMMAND_MAX_AGE_MS,
   isBridgeCommand,
-} from '@sp/plugin-kit/bridge-protocol';
-import type { BridgePluginState, BridgeResponse } from '@sp/plugin-kit/bridge-protocol';
-import { ACTIONS } from './actions';
-import type { ActionContext } from './actions';
-import { runNode } from './host';
-import { COMMIT_SCRIPT, DRAIN_SCRIPT, STAT_SCRIPT } from './scripts';
-import type { BridgeConfig } from './config';
+} from '../../../../packages/plugin-kit/src/bridge-protocol.ts';
+import type { BridgePluginState, BridgeResponse } from '../../../../packages/plugin-kit/src/bridge-protocol.ts';
+import { ACTIONS } from './actions.ts';
+import type { ActionContext } from './actions.ts';
+import { runNode } from './host.ts';
+import { COMMIT_SCRIPT, DRAIN_SCRIPT, STAT_SCRIPT } from './scripts.ts';
+import type { BridgeConfig } from './config-core.ts';
 
 interface DrainedCommand {
   file: string;
@@ -62,6 +65,18 @@ const MAX_COMMANDS_PER_TICK = 20;
 const MAX_LOG = 40;
 
 /**
+ * Where the runner gets its plugin API and its file scripts. The iframe uses
+ * the defaults; `plugin.js` injects the host-side `PluginAPI` instead, so the
+ * exact same tick logic serves both and only one of them ever polls.
+ */
+export interface RunnerEnv {
+  api(): PluginApi;
+  runNode<T>(script: string, args: unknown[], timeoutMs?: number): Promise<T>;
+}
+
+const DEFAULT_ENV: RunnerEnv = { api: getApi, runNode };
+
+/**
  * Drains the command queue, executes each command serially through the plugin
  * API and writes the responses back. One host call to read, at most one to
  * commit, so polling stays cheap and cannot overlap with itself.
@@ -75,11 +90,20 @@ export class BridgeRunner {
   private logEntries: LogEntry[] = [];
   private listeners = new Set<(status: RunnerStatus) => void>();
   private status: RunnerStatus;
+  // Plain fields, not constructor parameter properties: `node selftest.mjs`
+  // loads this file through Node's strip-only TypeScript mode.
+  private readonly pluginVersion: string;
+  private readonly getConfig: () => BridgeConfig;
+  private readonly env: RunnerEnv;
 
   constructor(
-    private readonly pluginVersion: string,
-    private readonly getConfig: () => BridgeConfig,
+    pluginVersion: string,
+    getConfig: () => BridgeConfig,
+    env: RunnerEnv = DEFAULT_ENV,
   ) {
+    this.pluginVersion = pluginVersion;
+    this.getConfig = getConfig;
+    this.env = env;
     const config = getConfig();
     this.status = {
       running: false,
@@ -159,7 +183,12 @@ export class BridgeRunner {
 
   async statDir(): Promise<DirStat> {
     const config = this.getConfig();
-    return runNode<DirStat>(STAT_SCRIPT, [config.bridgeDir], 4000);
+    return this.env.runNode<DirStat>(STAT_SCRIPT, [config.bridgeDir], 4000);
+  }
+
+  /** Runs exactly one queue drain, whether or not the loop is started. */
+  async runOnce(): Promise<void> {
+    await this.tick(true);
   }
 
   /** Proves the plugin API path works without any agent process attached. */
@@ -186,7 +215,7 @@ export class BridgeRunner {
 
   private context(): ActionContext {
     return {
-      api: getApi(),
+      api: this.env.api(),
       getCurrentTaskId: () => this.currentTaskId,
       log: (message: string) => this.push('info', message),
     };
@@ -204,8 +233,8 @@ export class BridgeRunner {
     }, Math.max(0, delayMs));
   }
 
-  private async tick(): Promise<void> {
-    if (!this.running || this.busy) return;
+  private async tick(force = false): Promise<void> {
+    if ((!this.running && !force) || this.busy) return;
     this.busy = true;
     this.status.busy = true;
     const config = this.getConfig();
@@ -213,7 +242,7 @@ export class BridgeRunner {
     let rejected = 0;
 
     try {
-      const drained = await runNode<DrainResult>(DRAIN_SCRIPT, [config.bridgeDir], 4000);
+      const drained = await this.env.runNode<DrainResult>(DRAIN_SCRIPT, [config.bridgeDir], 4000);
       rejected = drained.rejected;
       this.status.queueDepth = drained.commands.length;
 
@@ -226,7 +255,7 @@ export class BridgeRunner {
 
       const heartbeatDue = Date.now() - this.lastHeartbeatAt > 1500;
       if (entries.length > 0 || heartbeatDue) {
-        await runNode(COMMIT_SCRIPT, [config.bridgeDir, entries, this.heartbeat(config)], 5000);
+        await this.env.runNode(COMMIT_SCRIPT, [config.bridgeDir, entries, this.heartbeat(config)], 5000);
         this.lastHeartbeatAt = Date.now();
       }
       this.status.lastPollAt = Date.now();

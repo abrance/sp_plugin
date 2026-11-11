@@ -7,5 +7,5 @@
       "@sp/plugin-kit/bridge-protocol": ["../../packages/plugin-kit/src/bridge-protocol.ts"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts", "vite.host.config.ts"]
 }

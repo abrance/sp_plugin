@@ -57,6 +57,21 @@ async function runVite(pluginDir, mode) {
   });
 }
 
+/**
+ * Builds the host-side `plugin.js` (the process that owns polling) when the
+ * plugin has one. It is a separate Vite lib build: `index.html` is the panel,
+ * `plugin.js` is the always-loaded host half.
+ */
+async function runHostBuild(pluginDir) {
+  const configFile = path.join(pluginDir, 'vite.host.config.ts');
+  if (!existsSync(configFile)) return false;
+  const { build } = await import('vite');
+  await build({ root: pluginDir, configFile, mode: 'production', logLevel: 'warn' });
+  const built = path.join(pluginDir, 'host-dist', 'plugin.js');
+  if (!existsSync(built)) throw new Error(`${path.basename(pluginDir)}: host build produced no plugin.js`);
+  return true;
+}
+
 async function runViteDev(pluginDir) {
   const { createServer } = await import('vite');
   const server = await createServer({ root: pluginDir, configFile: path.join(pluginDir, 'vite.config.ts') });
@@ -71,6 +86,7 @@ async function packagePlugin(dir) {
   const distDir = path.join(pluginDir, 'dist');
 
   await runVite(pluginDir, 'production');
+  const hasHostScript = await runHostBuild(pluginDir);
 
   const indexPath = path.join(distDir, 'index.html');
   if (!existsSync(indexPath)) throw new Error(`${dir}: vite build produced no dist/index.html`);
@@ -86,7 +102,12 @@ async function packagePlugin(dir) {
   await copyIfExists('manifest.json');
   for (const asset of manifest.assets ?? []) await copyIfExists(asset);
   if (manifest.icon) await copyIfExists(manifest.icon);
-  if (existsSync(path.join(pluginDir, 'plugin.js'))) await copyIfExists('plugin.js');
+  if (hasHostScript) {
+    await cp(path.join(pluginDir, 'host-dist', 'plugin.js'), path.join(distDir, 'plugin.js'));
+    shipped.push('plugin.js');
+  } else if (existsSync(path.join(pluginDir, 'plugin.js'))) {
+    await copyIfExists('plugin.js');
+  }
   if (existsSync(path.join(pluginDir, 'README.md'))) await copyIfExists('README.md');
 
   const files = ['index.html', ...shipped];
@@ -107,6 +128,7 @@ async function clean() {
   const dirs = await listPlugins();
   for (const dir of dirs) {
     await rm(path.join(pluginsDir, dir, 'dist'), { recursive: true, force: true });
+    await rm(path.join(pluginsDir, dir, 'host-dist'), { recursive: true, force: true });
   }
   await rm(releaseDir, { recursive: true, force: true });
   log('cleaned dist/ and release/');

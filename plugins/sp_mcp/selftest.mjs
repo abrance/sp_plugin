@@ -10,11 +10,14 @@
  *      plugin API and answered with a response file plus a heartbeat;
  *   3. the agent-side queue turns a missing plugin into a `plugin-down` error
  *      and a silent plugin into a `timeout` error;
- *   4. every MCP tool maps to a real plugin action.
+ *   4. every MCP tool maps to a real plugin action;
+ *   5. the host-side loop (plugin.js) drains the queue on its own — no panel —
+ *      and stays idle when the panel's switch is off.
  *
  *   node selftest.mjs
  */
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -25,6 +28,8 @@ const nodeRequire = createRequire(import.meta.url);
 
 const { ACTIONS } = await import('./src/lib/actions.ts');
 const { DRAIN_SCRIPT, COMMIT_SCRIPT, STAT_SCRIPT } = await import('./src/lib/scripts.ts');
+const { createHostBridge, readHostConfig } = await import('./src/host/bridge.ts');
+const { CONFIG_DEFAULTS } = await import('./src/lib/config-core.ts');
 const { TOOLS } = await import('./bridge/src/tools.ts');
 const { CommandQueue, BridgeError } = await import('./bridge/src/queue.ts');
 
@@ -247,6 +252,57 @@ try {
   const missing = TOOLS.filter((tool) => !tool.local && !ACTIONS[tool.action]).map((tool) => tool.name);
   assert.deepEqual(missing, [], `tools without an action handler: ${missing.join(', ')}`);
   check(`all ${TOOLS.length} MCP tools map to a plugin action`);
+
+  // 5. host-side loop: owns polling, needs no panel, honours the switch
+  const fresh = await readHostConfig(async () => null);
+  assert.equal(fresh.bridgeDir, CONFIG_DEFAULTS.bridgeDir, 'fresh install falls back to defaults');
+  assert.equal(fresh.enabled, true);
+
+  const hostDir = await mkdtemp(path.join(tmpdir(), 'sp-mcp-host-'));
+  await mkdir(path.join(hostDir, 'commands'), { recursive: true });
+  const hostConfig = JSON.stringify({ bridgeDir: hostDir, pollMs: 300 });
+  const hostEnv = (loadConfig) => ({
+    version: '0.2.0',
+    api: () => fakeApi().api,
+    runNode: async (script, args) => sandbox(script, args),
+    loadConfig,
+    superviseMs: 60_000,
+  });
+
+  const hostBridge = createHostBridge(hostEnv(async () => hostConfig));
+  await writeFile(
+    path.join(hostDir, 'commands', 'host-1.json'),
+    JSON.stringify({ id: 'host-1', action: 'ping', args: {}, issuedAt: Date.now() }),
+    'utf8',
+  );
+  await hostBridge.pump();
+  const hostResponse = JSON.parse(
+    await readFile(path.join(hostDir, 'responses', 'host-1.json'), 'utf8'),
+  );
+  assert.equal(hostResponse.ok, true, 'host loop executed the queued command');
+  const hostState = sandbox(STAT_SCRIPT, [hostDir]).pluginState;
+  assert.equal(hostState.pluginVersion, '0.2.0');
+  assert.ok(Date.now() - hostState.updatedAt < 5000, 'host loop wrote a fresh heartbeat');
+  hostBridge.stop();
+
+  const paused = createHostBridge(
+    hostEnv(async () => JSON.stringify({ bridgeDir: hostDir, enabled: false })),
+  );
+  await writeFile(
+    path.join(hostDir, 'commands', 'paused-1.json'),
+    JSON.stringify({ id: 'paused-1', action: 'ping', args: {}, issuedAt: Date.now() }),
+    'utf8',
+  );
+  await paused.start();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(paused.runner.snapshot().running, false, 'switch off → host loop idle');
+  assert.ok(
+    existsSync(path.join(hostDir, 'commands', 'paused-1.json')),
+    'switch off → queued command left untouched',
+  );
+  paused.stop();
+  await rm(hostDir, { recursive: true, force: true });
+  check('host-side loop drains the queue without a panel and obeys the panel switch');
 
   console.log(`[selftest] ${passed.length} checks passed (node ${process.version})`);
   for (const line of passed) console.log(`  ✓ ${line}`);
