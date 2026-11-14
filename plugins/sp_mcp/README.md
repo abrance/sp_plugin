@@ -108,6 +108,17 @@ HTTP 是**无状态**的：每个请求一个 transport + 一个 server 实例�
 
 停止：`Ctrl-C`。诊断日志全部走 stderr，两种传输都不往 stdout 写协议以外的东西。
 
+**常驻（HTTP 版）**：`deploy/sp-mcp-http.service` 是 systemd `--user` unit，`Restart=always` +
+`enabled`。token 放 `~/.config/sp-mcp-http.env`（600），不进 unit 文件。安装步骤写在 unit 头部注释里。
+
+```bash
+systemctl --user enable --now sp-mcp-http.service
+journalctl --user -u sp-mcp-http.service -f
+```
+
+`StartLimitIntervalSec` / `StartLimitBurst` 必须写在 `[Unit]`，放 `[Service]` 会报 `Unknown key`。
+`ExecStart` 里要用 Node ≥ 22.18 的绝对路径（`/usr/bin/env node` 在非交互 ssh 下常常找不到）。
+
 挂到 Pi（`mcp.json`，stdio 版）：
 
 ```json

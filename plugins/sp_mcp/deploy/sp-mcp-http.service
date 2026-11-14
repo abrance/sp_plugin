@@ -1,0 +1,36 @@
+# sp_mcp bridge — Streamable HTTP MCP endpoint for Super Productivity.
+#
+# Install (as the user that runs Super Productivity):
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/sp-mcp-http.service ~/.config/systemd/user/
+#   install -m 600 /dev/null ~/.config/sp-mcp-http.env
+#   printf 'SP_MCP_HTTP_HOST=0.0.0.0\nSP_MCP_HTTP_PORT=3877\nSP_MCP_HTTP_TOKEN=%s\n' \
+#     "$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 32)" > ~/.config/sp-mcp-http.env
+#   systemctl --user daemon-reload && systemctl --user enable --now sp-mcp-http.service
+#   loginctl enable-linger "$USER"   # optional: keep serving after logout / on boot
+#
+# Node must be >= 22.18 so it can run the TypeScript entry directly; adjust
+# ExecStart if `node` resolves elsewhere (a system node may be older).
+
+[Unit]
+Description=sp_mcp bridge — Streamable HTTP MCP endpoint for Super Productivity
+Documentation=https://github.com/abrance/sp_plugin/tree/main/plugins/sp_mcp
+After=network-online.target
+Wants=network-online.target
+# Restart=always keeps the port served; give up only if it flaps hard.
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=%h/sp_plugin/plugins/sp_mcp/bridge
+EnvironmentFile=%h/.config/sp-mcp-http.env
+ExecStart=/usr/bin/env node src/http.ts
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sp-mcp-http
+
+[Install]
+WantedBy=default.target
