@@ -8,22 +8,16 @@
  *
  *   node src/main.ts        # Node >= 22.18 runs this TypeScript directly
  *
+ * For a port instead of stdin/stdout see `src/http.ts`.
  * stdout carries the MCP protocol, so every diagnostic goes to stderr.
  */
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { BridgeError, CommandQueue, Mutex } from './queue.ts';
+import { CommandQueue, Mutex } from './queue.ts';
 import { TOOLS } from './tools.ts';
-
-const VERSION = '0.1.0';
-
-const log = (...parts: unknown[]): void => {
-  console.error('[sp_mcp-bridge]', ...parts);
-};
+import { createMcpServer, describePlugin, log } from './server.ts';
 
 async function main(): Promise<void> {
   const queue = new CommandQueue();
-  const mutex = new Mutex();
 
   try {
     await queue.ensure();
@@ -35,45 +29,11 @@ async function main(): Promise<void> {
     log(`bridge directory is not usable: ${(error as Error).message}`);
   }
 
-  const server = new McpServer({ name: 'super-productivity', version: VERSION });
+  const server = createMcpServer(queue, new Mutex());
+  await server.connect(new StdioServerTransport());
 
-  for (const tool of TOOLS) {
-    server.registerTool(
-      tool.name,
-      { description: tool.description, inputSchema: tool.shape },
-      async (args: Record<string, unknown>) => {
-        try {
-          const payload = tool.local
-            ? await tool.local(queue)
-            : await mutex.run(() =>
-                queue.call<unknown>(
-                  tool.action as string,
-                  (tool.map ? tool.map(args) : args) ?? {},
-                ),
-              );
-          return { content: [{ type: 'text' as const, text: JSON.stringify(payload, null, 2) }] };
-        } catch (error) {
-          const text =
-            error instanceof BridgeError
-              ? `[${error.code}] ${error.message}`
-              : error instanceof Error
-                ? error.message
-                : String(error);
-          log(`${tool.name} failed: ${text}`);
-          return { content: [{ type: 'text' as const, text }], isError: true };
-        }
-      },
-    );
-  }
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  const state = await queue.readPluginState();
   log(
-    `ready · dir=${queue.dirs.root} · tools=${TOOLS.length} · plugin=${
-      state ? `v${state.pluginVersion} last seen ${Math.round((Date.now() - state.updatedAt) / 1000)}s ago` : 'never seen'
-    }`,
+    `ready · dir=${queue.dirs.root} · tools=${TOOLS.length} · plugin=${await describePlugin(queue)}`,
   );
 
   const shutdown = async (): Promise<void> => {

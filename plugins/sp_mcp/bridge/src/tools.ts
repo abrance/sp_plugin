@@ -148,6 +148,13 @@ export const TOOLS: ToolDef[] = [
     action: 'update_project',
   },
   {
+    name: 'delete_project',
+    description:
+      'Delete a project. Super Productivity cascades: the tasks and backlog are moved, not deleted with it — check `get_projects` before this.',
+    shape: { project_id: z.string().min(1) },
+    action: 'delete_project',
+  },
+  {
     name: 'get_tags',
     description: 'List tags (including TODAY and its task ids).',
     shape: {},

@@ -128,6 +128,11 @@ function fakeApi() {
           projects.find((p) => p.id === id) ?? {},
           updates,
         ),
+      deleteProject: async (id) => {
+        const index = projects.findIndex((p) => p.id === id);
+        if (index < 0) throw new Error(`no project ${id}`);
+        projects.splice(index, 1);
+      },
       addTag: async (data) => {
         const id = `tag${tags.length}`;
         tags.push({
@@ -236,6 +241,17 @@ try {
   assert.equal(subTask.projectId, state.tasks[1].projectId, 'subtask follows the parent project');
   assert.equal(subTask.timeEstimate, 1_800_000, 'subtask keeps its estimate');
   check('subtask create keeps tagIds, parent project and timeEstimate');
+
+  // 2c. delete_project reports the cascade before removing the project
+  await assert.rejects(
+    ACTIONS.delete_project({ project_id: 'nope' }, actionCtx),
+    /project nope not found/,
+  );
+  const del = await ACTIONS.delete_project({ project_id: 'P1' }, actionCtx);
+  assert.equal(del.deleted, 'P1');
+  assert.equal(del.tasksMoved, 1, 'cascade count comes from the project payload');
+  assert.equal(state.projects.length, 0, 'project is gone');
+  check('delete_project reports cascade counts and rejects unknown ids');
 
   assert.equal(sandbox(DRAIN_SCRIPT, [dir]).commands.length, 0, 'consumed command file is gone');
   assert.equal(sandbox(STAT_SCRIPT, [dir]).pluginState?.pluginVersion, '0.1.0');

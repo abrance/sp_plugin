@@ -66,16 +66,49 @@ Super Productivity → Settings → Plugins → Install from file → 选
 **面板不是必须的**：装好并启用后，后台循环在 SP 每次启动时自己跑。想改目录、改间隔、
 临时停掉命令接收，再打开一次侧边栏。首次建议打开一次，确认徽标显示 `polling`。
 
-**2. 起 agent 侧的 MCP server（stdio，不需要端口）**
+**2. 起 agent 侧的 MCP server**
+
+两种传输，同一套 24 个工具。
+
+**stdio**（agent 和 SP 在同一台机器）：
 
 ```bash
 cd /opt/mystorage/github/sp_plugin/plugins/sp_mcp/bridge
 node src/main.ts          # Node >= 22.18，直接跑 TypeScript
 ```
 
-停止：`Ctrl-C`（SIGINT/SIGTERM 都会正常关闭）。诊断日志全部走 stderr，stdout 只放 MCP 协议。
+**Streamable HTTP**（agent 在别的机器，SP 只跑一份）：
 
-挂到 Pi（`mcp.json`）：
+```bash
+cd /opt/mystorage/github/sp_plugin/plugins/sp_mcp/bridge
+SP_MCP_HTTP_HOST=10.193.0.2 SP_MCP_HTTP_PORT=3877 SP_MCP_HTTP_TOKEN=$(cat ~/.sp-mcp-token) \
+  node src/http.ts
+```
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `SP_MCP_HTTP_HOST` | `127.0.0.1` | 绑非 loopback 地址时**强制要求 token**，否则拒绝启动 |
+| `SP_MCP_HTTP_PORT` | `3877` | 3876 是 SP 自己的 REST API，别占 |
+| `SP_MCP_HTTP_TOKEN` | 空 | `Authorization: Bearer <token>` |
+| `SP_MCP_HTTP_INSECURE` | 空 | `=1` 才允许无 token 对外监听（不建议） |
+| `SP_MCP_BRIDGE_DIR` | `~/.local/share/sp-mcp-bridge` | 与插件侧一致 |
+
+端点：`/mcp`（GET/POST/DELETE）、`/health`（不带鉴权，只回 `{status,tools}`，不含任务数据）。
+
+客户端配置：
+
+```json
+{"mcpServers":{"super-productivity":{
+  "type":"http","url":"http://10.193.0.2:3877/mcp",
+  "headers":{"Authorization":"Bearer <token>"}}}}
+```
+
+HTTP 是**无状态**的：每个请求一个 transport + 一个 server 实例，共享进程内 `Mutex` 和同一个命令队列。
+所以多台机器同时调用不会并发写 SP，代价是每个请求都要重新握手。
+
+停止：`Ctrl-C`。诊断日志全部走 stderr，两种传输都不往 stdout 写协议以外的东西。
+
+挂到 Pi（`mcp.json`，stdio 版）：
 
 ```json
 {
@@ -94,11 +127,13 @@ node src/main.ts          # Node >= 22.18，直接跑 TypeScript
 **3. 验证**
 
 ```bash
-node selftest.mjs                                   # 7 项不装 SP 的自检（含宿主循环）
+node selftest.mjs                                   # 8 项不装 SP 的自检（含宿主循环）
 cd bridge && printf '%s\n' \
  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}' \
  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bridge_status","arguments":{}}}' \
  | node src/main.ts
+
+curl -s http://10.193.0.2:3877/health          # {"status":"ok","tools":24}
 ```
 
 `bridge_status` 返回 `alive: true` 说明宿主循环在收命令；`pluginState: null` 说明插件没跑
@@ -117,7 +152,7 @@ cd bridge && printf '%s\n' \
 | `update_task` | 增量改；`tag_ids` 覆盖全部 tag，`add_tag_names` 追加 |
 | `complete_task` / `delete_task` | 完成 / 永久删除（含子任务） |
 | `reorder_tasks` | 项目内或父任务内重排，要传完整有序 id 列表 |
-| `get_projects` / `create_project` / `update_project` | 项目 |
+| `get_projects` / `create_project` / `update_project` / `delete_project` | 项目（`delete_project` 会连带移走任务，不是删任务） |
 | `get_tags` / `create_tag` / `update_tag` | tag（`get_tags` 顺带返回 TODAY 的 taskIds） |
 | `add_tag_to_task` / `remove_tag_from_task` | 按名字或 id 增删 tag |
 | `get_today` / `plan_tasks_today` / `remove_tasks_from_today` | 今日计划（写 TODAY tag） |
@@ -128,8 +163,10 @@ cd bridge && printf '%s\n' \
 
 - **常驻边界**：SP 退出就断，重开 SP 自动恢复；关侧边栏、切视图都不影响。agent 侧协议没变，
   `alive` 的判定还是「心跳 10s 内且 `enabled`」。
-- **并发**：一轮只跑一条命令，agent 侧也串行排队。吞吐上限是「一动作一往返」，
-  批量改 20 个任务 ≈ 20 个来回。
+- **并发**：一轮只跑一条命令，agent 侧也串行排队。HTTP 传输是单进程 + 进程内 `Mutex`，
+  所以多台机器共用一个桥时仍然是串行；但**不要同时起 stdio 和 http 两个进程**——两个进程各有一把锁，
+  跨进程没有互斥（命令按 id 隔离不会串，同一任务被两边同时改会互相覆盖）。
+  吞吐上限是「一动作一往返」，批量改 20 个任务 ≈ 20 个来回。
 - **延迟**：默认 800ms 轮询，单个调用的体感延迟约一个轮询周期。侧边栏可调到 400ms。
 - **开销**：每轮最多一次宿主调用读队列，心跳/响应合并成一次提交；面板开着时另有 1.5s 一次读心跳
   （只读 `state/plugin.json`，不碰任务数据）。
@@ -147,14 +184,17 @@ cd bridge && printf '%s\n' \
 ## 安全面
 
 - 权限：`nodeExecution`（唯一被强制的权限，启用时弹窗一次）+ 任务/项目/tag/计时器读写 + `dispatchAction`
-  + `persistDataSynced`/`loadSyncedData`（配置持久化）。没有 `http`，`allowedHosts` 为空 ——
-  插件不具备任何对外网络能力。
+  + `deleteProject` + `persistDataSynced`/`loadSyncedData`（配置持久化）。没有 `http`，`allowedHosts` 为空 ——
+  **插件本身**不具备任何对外网络能力。
+- **HTTP 传输是另一回事**：`src/http.ts` 是 agent 侧的进程，它在监听端口，能把 `commands/` 写满。
+  绑非 loopback 地址时没 token 会直接拒绝启动（`SP_MCP_HTTP_INSECURE=1` 才能绕过）。
+  拿到 token 就等于拿到 SP 全权限：读全部任务、改、删。
 - 能干什么：读你全部任务、项目、tag、notes；改/删任务；改文件系统里共享目录下的三个子目录
   （脚本写死只用 `args[0]` 拼路径，无法读到别处 —— 但 VM 沙箱里的 `fs` 本身是完整的，
   真正的边界是「脚本是我们自己写的、不接收外部脚本」）。
-- 谁能控制它：任何能在你的账号下写 `commands/` 的本机进程。共享目录默认 0755，
-  多用户机器上建议 `chmod 700 ~/.local/share/sp-mcp-bridge`。
-- 凭据：本插件不需要也不保存任何凭据；命令队列里不会有密码。
+- 谁能控制它：任何能在你的账号下写 `commands/` 的本机进程，或任何持有 HTTP token 的远程客户端。
+  共享目录默认 0755，多用户机器上建议 `chmod 700 ~/.local/share/sp-mcp-bridge`。
+- 凭据：插件不需要也不保存任何凭据；命令队列里不会有密码。HTTP token 只存在于服务进程的环境变量里。
 
 ## 排错
 

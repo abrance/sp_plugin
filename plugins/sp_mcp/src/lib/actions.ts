@@ -123,6 +123,12 @@ async function findTask(api: PluginApi, taskId: string, includeArchived = false)
   throw new Error(`task ${taskId} not found — call get_tasks for current ids`);
 }
 
+async function findProject(api: PluginApi, projectId: string): Promise<Project> {
+  const hit = (await api.getAllProjects()).find((p) => p.id === projectId);
+  if (!hit) throw new Error(`project ${projectId} not found — call get_projects for current ids`);
+  return hit;
+}
+
 async function planToday(api: PluginApi, taskIds: string[]): Promise<unknown> {
   api.dispatchAction({
     type: '[Task Shared] planTasksForToday',
@@ -305,6 +311,19 @@ export const ACTIONS: Record<string, ActionHandler> = {
     if (Object.keys(updates).length === 0) throw new Error('nothing to update');
     await ctx.api.updateProject(projectId, updates);
     return { updated: projectId };
+  },
+
+  async delete_project(args, ctx) {
+    const projectId = str(args, 'project_id');
+    if (!projectId) throw new Error('project_id is required');
+    const project = await findProject(ctx.api, projectId);
+    // SP cascades: deleting a project archives/moves its tasks, it is not a delete.
+    await ctx.api.deleteProject(projectId);
+    return {
+      deleted: projectId,
+      tasksMoved: project.taskIds?.length ?? 0,
+      backlogMoved: project.backlogTaskIds?.length ?? 0,
+    };
   },
 
   async get_tags(_args, ctx) {

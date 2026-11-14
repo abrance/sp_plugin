@@ -1,12 +1,13 @@
 {
   "name": "sp_mcp-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Stdio MCP server that drives the sp_mcp Super Productivity plugin over a command-file queue",
+  "description": "MCP server that drives the sp_mcp Super Productivity plugin over a command-file queue (stdio + Streamable HTTP)",
   "main": "src/main.ts",
   "scripts": {
     "start": "node src/main.ts",
+    "start:http": "node src/http.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
