@@ -1,6 +1,6 @@
 {
   "name": "sp_mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "SP MCP Bridge — Super Productivity host plugin.js loop + iframe status panel (SolidJS) + Node MCP server",

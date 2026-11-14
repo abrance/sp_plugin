@@ -87,6 +87,7 @@ function fakeApi() {
       getAllTags: async () => tags,
       addTask: async (data) => {
         const id = `new${++seq}`;
+        const parent = data.parentId ? tasks.find((t) => t.id === data.parentId) : null;
         tasks.push({
           ...data,
           id,
@@ -94,7 +95,9 @@ function fakeApi() {
           isDone: false,
           created: Date.now(),
           subTaskIds: [],
-          tagIds: data.tagIds ?? [],
+          // Mirrors SP core: a subtask is created with no tags and the parent's project.
+          tagIds: parent ? [] : (data.tagIds ?? []),
+          projectId: parent ? parent.projectId : data.projectId,
         });
         return id;
       },
@@ -180,11 +183,8 @@ try {
   assert.equal(drained.commands[0].cmd.action, 'create_task');
 
   const startedAt = Date.now();
-  const result = await ACTIONS[command.action](command.args, {
-    api,
-    getCurrentTaskId: () => null,
-    log: () => undefined,
-  });
+  const actionCtx = { api, getCurrentTaskId: () => null, log: () => undefined };
+  const result = await ACTIONS[command.action](command.args, actionCtx);
   const finishedAt = Date.now();
   const response = {
     id: command.id,
@@ -219,6 +219,23 @@ try {
   assert.equal(state.tasks[1].dueDay, '2026-11-20');
   assert.equal(state.dispatched[0].type, '[Task Shared] planTasksForToday');
   check('command → plugin action → response → heartbeat round trip');
+
+  // 2b. subtask create keeps the fields SP core would drop
+  const parentId = state.tasks[1].id;
+  const sub = await ACTIONS.create_task(
+    {
+      title: 'subtask with tags',
+      parent_id: parentId,
+      tag_names: ['Today'],
+      time_estimate: 1_800_000,
+    },
+    actionCtx,
+  );
+  const subTask = state.tasks.find((t) => t.id === sub.id);
+  assert.deepEqual(subTask.tagIds, ['TODAY'], 'subtask keeps the tags it asked for');
+  assert.equal(subTask.projectId, state.tasks[1].projectId, 'subtask follows the parent project');
+  assert.equal(subTask.timeEstimate, 1_800_000, 'subtask keeps its estimate');
+  check('subtask create keeps tagIds, parent project and timeEstimate');
 
   assert.equal(sandbox(DRAIN_SCRIPT, [dir]).commands.length, 0, 'consumed command file is gone');
   assert.equal(sandbox(STAT_SCRIPT, [dir]).pluginState?.pluginVersion, '0.1.0');

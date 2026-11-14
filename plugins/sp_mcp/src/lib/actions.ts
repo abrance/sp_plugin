@@ -186,15 +186,20 @@ export const ACTIONS: Record<string, ActionHandler> = {
       ...(await resolveTagIds(ctx.api, strList(args, 'tag_names'), bool(args, 'create_missing') ?? false)),
     ];
     const timeEstimate = num(args, 'time_estimate');
+    const parentId = str(args, 'parent_id') ?? null;
+    const uniqueTags = [...new Set(tagIds)];
     const id = await ctx.api.addTask({
       title,
       notes: str(args, 'notes'),
       projectId: str(args, 'project_id') ?? null,
-      parentId: str(args, 'parent_id') ?? null,
-      tagIds: tagIds.length > 0 ? [...new Set(tagIds)] : undefined,
+      parentId,
+      tagIds: uniqueTags.length > 0 ? uniqueTags : undefined,
       timeEstimate,
       dueDay: str(args, 'due_day') ?? null,
     });
+    // SP core forces `tagIds: []` on subtasks and takes the parent's project, so the
+    // tags asked for above are dropped; set them right after the create.
+    if (parentId && uniqueTags.length > 0) await ctx.api.updateTask(id, { tagIds: uniqueTags });
     if (bool(args, 'plan_today')) await planToday(ctx.api, [id]);
     return { id };
   },
